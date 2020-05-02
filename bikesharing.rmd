@@ -1,0 +1,256 @@
+---
+title: "Building Multi-Variate Models on London BikeSharing Data"
+author: "Zhengyuan Shen"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r}
+library(alr4)
+library(leaps)
+library(MASS)
+library(pls)
+library(trafo)
+library(VGAM)
+```
+
+```{r}
+BikeSharing <- read.delim("bikesharing18.txt",sep = "")
+pairs(data.frame(BikeSharing$temperature,BikeSharing$feels_like,BikeSharing$humidity,BikeSharing$wind_speed))
+m1  = lm(N_bikes~temperature+feels_like+humidity+wind_speed+holiday+weekend+season,data = BikeSharing)
+summary(m1)
+par(mfrow=c(2,2))
+plot(m1)
+```
+
+```{r}
+m_all = lm(N_bikes~feels_like+humidity+wind_speed+holiday+weekend+feels_like*holiday+feels_like*weekend+wind_speed*holiday+humidity*holiday+humidity*weekend+wind_speed*weekend,data = BikeSharing)
+Anova(m_all,type='II')
+```
+
+
+
+## Best Subset Selection
+```{r}
+m.select =regsubsets(N_bikes~temperature+feels_like+humidity+wind_speed+holiday+weekend+season+
+                       temperature*holiday+temperature*weekend+temperature*season+
+                       feels_like*holiday+feels_like*weekend+feels_like*season+
+                       wind_speed*holiday+wind_speed*weekend+wind_speed*season+
+                       humidity*holiday+humidity*weekend+humidity*season,data=BikeSharing,nvmax=20)
+reg.summary = summary(m.select)
+reg.summary 
+reg.summary$adjr2
+c(which.max(summary(m.select)$adjr2),max(summary(m.select)$adjr2))
+
+library(ggvis)
+rsq <- as.data.frame(reg.summary$rsq)
+names(rsq) <- "R2"
+rsq %>% 
+        ggvis(x=~ c(1:nrow(rsq)), y=~R2 ) %>%
+        layer_points(fill = ~ R2 ) %>%
+        add_axis("y", title = "R^2") %>% 
+        add_axis("x", title = "Number of variables")
+
+par(mfrow=c(2,2))
+plot(reg.summary$rss ,xlab="Number of Variables ",ylab="RSS",type="l")
+plot(reg.summary$adjr2 ,xlab="Number of Variables ", ylab="Adjusted RSq",type="l")
+# which.max(reg.summary$adjr2)
+points(6,reg.summary$adjr2[6], col="red",cex=2,pch=20)
+plot(reg.summary$cp ,xlab="Number of Variables ",ylab="Cp", type='l')
+# which.min(reg.summary$cp )
+points(6,reg.summary$cp [6],col="red",cex=2,pch=20)
+plot(reg.summary$bic ,xlab="Number of Variables ",ylab="BIC",type='l')
+# which.min(reg.summary$bic )
+points(6,reg.summary$bic [6],col="red",cex=2,pch=20)
+
+
+#The model fitted from best subset selection
+m_sub = lm(N_bikes~feels_like + humidity + wind_speed +feels_like:weekend + humidity:holiday + humidity:weekend,
+           data = BikeSharing)
+summary(m_sub)
+
+
+m_max = lm(N_bikes~temperature+feels_like+humidity+wind_speed+holiday+weekend+season+
+                       temperature*holiday+temperature*weekend+temperature*season+
+                       feels_like*holiday+feels_like*weekend+feels_like*season+
+                       wind_speed*holiday+wind_speed*weekend+wind_speed*season+
+                       humidity*holiday+humidity*weekend+humidity*season,data=BikeSharing)
+Anova(m_max,type='II')
+```
+
+
+
+
+## Box-Cox and Yeo-Jhonson
+```{r}
+par(mfrow=c(1,2))
+boxcox(m_sub,plotit=TRUE)
+
+best.lambda_bc = boxcox(m_sub)$lambdahat
+best.lambda_bc
+m_boxcox = lm(((N_bikes^best.lambda_bc-1)/best.lambda_bc)~feels_like + humidity + wind_speed +feels_like:weekend + humidity:holiday + humidity:weekend,data = BikeSharing)
+summary(m_boxcox)
+
+best.lambda_yeo = yeojohnson(m_sub)$lambdahat
+best.lambda_yeo
+m_yeo =lm(yeo.johnson(N_bikes,best.lambda_yeo)~feels_like + humidity + wind_speed +feels_like:weekend + humidity:holiday + humidity:weekend,data=BikeSharing)
+summary(m_yeo)
+```
+
+# Principle Component Regression
+```{r}
+# #Without standardizing the variables
+# m.pcr1 = pcr(N_bikes~.,data= BikeSharing,ncomp=7,validation='CV')
+# prc1 = princomp(BikeSharing[,colnames(BikeSharing)!='N_bikes'])
+# summary(m.pcr1)
+# screeplot(prc1)
+# m.pcr1$loadings
+
+## With standardizing the variables
+# BikeSharing[,colnames(BikeSharing)!='N_bikes'] = data.frame(scale(BikeSharing[,colnames(BikeSharing)!='N_bikes']))
+# 
+# m.pcr2 = pcr(N_bikes~.,data= BikeSharing,ncomp=7,validation='CV')
+# prc2 = princomp(BikeSharing[,colnames(BikeSharing)!='N_bikes'])
+# summary(m.pcr2)
+# screeplot(prc2)
+# m.pcr2$loadings
+# 
+# 
+# #Pick the non-standardized variable model, with ncomp = 3
+# BikeSharing <- read.delim("bikesharing18.txt",sep = "")
+# m.pcr = pcr(N_bikes~.,data= BikeSharing,ncomp=3,validation='CV')
+# MSEP(m.pcr)$val
+# summary(m.pcr)
+
+
+library(caret)
+set.seed(123)
+training.samples <- BikeSharing$N_bikes %>%
+  createDataPartition(p = 0.66, list = FALSE)
+train.data  <- BikeSharing[training.samples, ]
+test.data <- BikeSharing[-training.samples, ]
+
+set.seed(123)
+model <- train(
+  N_bikes~., data = train.data, method = "pcr",
+  scale = FALSE,
+  trControl = trainControl("cv", number = 7),
+  tuneLength = 7
+  )
+# Plot model RMSE vs different values of components
+plot(model)
+# Print the best tuning parameter ncomp that
+# minimize the cross-validation error, RMSE
+model$bestTune
+
+summary(model$finalModel)
+
+# Make predictions
+predictions <- model %>% predict(test.data)
+# Model performance metrics
+data.frame(
+  RMSE = caret::RMSE(predictions, test.data$N_bikes),
+  Rsquare = caret::R2(predictions, test.data$N_bikes)
+)
+
+plot(predictions, test.data$N_bikes, pch=16, col="royalblue", cex=0.75,
+xlab="Predicted Output",
+ylab="Observed Output",
+main="Principle Component Regression: Observed vs. Predicted")
+lines(predictions, lm(a~b, data=data.frame(a=test.data$N_bikes, b=predictions))$fitted, lwd=2, col="orange")
+
+
+#Normalizing data
+BikeSharing[,colnames(BikeSharing)!='N_bikes'] = data.frame(scale(BikeSharing[,colnames(BikeSharing)!='N_bikes']))
+set.seed(123)
+training.samples <- BikeSharing$N_bikes %>%
+  createDataPartition(p = 0.66, list = FALSE)
+train.data  <- BikeSharing[training.samples, ]
+test.data <- BikeSharing[-training.samples, ]
+
+set.seed(123)
+model <- train(
+  N_bikes~., data = train.data, method = "pcr",
+  scale = FALSE,
+  trControl = trainControl("cv", number = 7),
+  tuneLength = 7
+  )
+# Plot model RMSE vs different values of components
+plot(model)
+# Print the best tuning parameter ncomp that
+# minimize the cross-validation error, RMSE
+model$bestTune
+
+summary(model$finalModel)
+
+# Make predictions
+predictions <- model %>% predict(test.data)
+# Model performance metrics
+data.frame(
+  RMSE = caret::RMSE(predictions, test.data$N_bikes),
+  Rsquare = caret::R2(predictions, test.data$N_bikes)
+)
+
+plot(predictions, test.data$N_bikes, pch=16, col="royalblue", cex=0.75,
+xlab="Predicted Output",
+ylab="Observed Output",
+main="Principle Component Regression: Observed vs. Predicted")
+lines(predictions, lm(a~b, data=data.frame(a=test.data$N_bikes, b=predictions))$fitted, lwd=2, col="orange")
+```
+```{r}
+library(xgboost)
+library(Metrics)
+training.samples <- BikeSharing$N_bikes %>%
+  createDataPartition(p = 0.66, list = FALSE)
+train.data  <- BikeSharing[training.samples, ]
+test.data <- BikeSharing[-training.samples, ]
+y_train = train.data[,1] 
+X_train = train.data[,-1]
+X_train <- as.matrix(X_train)
+
+y_test = test.data[,1] 
+X_test = test.data[,-1]
+X_test <- as.matrix(X_test)
+
+fit_xgb <- xgboost(X_train, y_train
+                   , max_depth = 10
+                   , eta = 0.02
+                   , nthread = 4
+                   , nrounds = 800
+                   , subsample = .7
+                   , colsample_bytree = .7
+                   , booster = "gbtree"
+                   , eval_metric = "rmse"
+                   , objective="reg:linear")
+y_hat_xgb <- predict(fit_xgb, X_test)
+
+## Plot the feature importance
+importance_matrix <- xgb.importance(colnames(X_train), model = fit_xgb)
+xgb.plot.importance(importance_matrix = importance_matrix[1:7])
+
+data.frame(
+  RMSE = RMSE(y_hat_xgb,y_test),
+  Rsquare = R2(y_hat_xgb,y_test)
+)
+
+
+plot(y_hat_xgb, y_test, pch=16, col="royalblue", cex=0.75,
+xlab="Predicted Output",
+ylab="Observed Output",
+main="XGBOOST: Observed vs. Predicted")
+lines(y_hat_xgb, lm(a~b, data=data.frame(a=y_test, b=y_hat_xgb))$fitted, lwd=2, col="orange")
+```
+
+
+
+
+
+
+
+
+
+
+
